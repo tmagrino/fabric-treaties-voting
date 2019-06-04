@@ -1,0 +1,102 @@
+package voting.util;
+
+import fabric.worker.transaction.TransactionManager;
+import fabric.metrics.contracts.warranties.WarrantyComp;
+import fabric.worker.metrics.StatsMap;
+import fabric.worker.metrics.WarrantyProposal;
+import fabric.worker.metrics.treaties.statements.ThresholdStatement;
+import fabric.worker.metrics.treaties.statements.EqualityStatement;
+import fabric.metrics.contracts.Bound;
+import fabric.metrics.Metric;
+import fabric.util.Arrays;
+import fabric.util.LinkedList;
+
+/**
+ * Warranty computation for the winner across a group of Districts.
+ */
+public class WinnerWarrantyComp extends WarrantyComp {
+
+  public final String candidate1;
+  public final String candidate2;
+  public final Metric margin;
+  public final Metric negMargin;
+  public final District[] districts;
+
+  public WinnerWarrantyComp voting$util$WinnerWarrantyComp$(
+      District[] districts, String candidate1, String candidate2) {
+    fabric$metrics$contracts$warranties$WarrantyComp$(false);
+    this.candidate1 = candidate1;
+    this.candidate2 = candidate2;
+    this.districts = new District[districts.length];
+    Arrays.arraycopy(districts, 0, this.districts, 0, districts.length);
+    // Construct a hierarchy of margin subcomputations across the districts,
+    // pairing them up.
+    LinkedList margins = new LinkedList().fabric$util$LinkedList$();
+    for (int i = 0; i < districts.length; i++) {
+      margins.add(districts[i].margin(candidate1, candidate2));
+    }
+    while (margins.size() > 1) {
+      Metric m1 = (Metric) margins.removeFirst();
+      Metric m2 = (Metric) margins.removeFirst();
+      margins.add(Metric.addAtStore(m1.$getStore(), new Metric native[] { m1, m2 }));
+    }
+    margin = (Metric) margins.get(0);
+    negMargin = margin.times(-1);
+    return this;
+  }
+
+  /*@Override*/
+  public WarrantyProposal updatedVal(long time) {
+    TransactionManager tm = TransactionManager.getInstance();
+    final Store s = Worker.getWorker().getLocalStore();
+    // Note, right now we're defaulting ties to the first candidate.
+    StatsMap weakStats = StatsMap.emptyStats();
+    if (!tm.inTxn()) {
+      if (margin.$getStore().name().equals(Worker.getWorkerName())) {
+        weakStats = margin.refreshWeakEstimates(weakStats);
+      } else {
+        RemoteWorker w = Worker.getWorker().getWorker(margin.$getStore().name());
+        weakStats = margin.refreshWeakEstimates_remote@w(null, weakStats);
+      }
+    }
+    double inconsistentMargin = tm.inTxn() ? margin.value() : weakStats.getValue(margin);
+    fabric.common.Logging.METRICS_LOGGER.finer("GETTING A NEW WARRANTY VALUE (ESTIMATED " + inconsistentMargin + ")");
+    WarrantyProposal rtn = null;
+    Metric m = margin;
+    if (inconsistentMargin > 0) {
+      if (tm.inTxn()) {
+        rtn = WarrantyProposal.newProposal(candidate1, m, ThresholdStatement.create(0, 0.5, time), weakStats);
+      } else {
+        atomic {
+          rtn = WarrantyProposal.newProposal(candidate1, m, ThresholdStatement.create(0, 0.5, time), weakStats);
+        }
+      }
+    } else if (inconsistentMargin < 0) {
+      // Performed outside of transaction so we don't run refresh operations
+      // atomically.
+      m = negMargin;
+      if (tm.inTxn()) {
+        rtn = WarrantyProposal.newProposal(candidate2, m, ThresholdStatement.create(0, 0.5, time), weakStats);
+      } else {
+        if (m.$getStore().name().equals(Worker.getWorkerName())) {
+          weakStats = m.refreshWeakEstimates(weakStats);
+        } else {
+          RemoteWorker w = Worker.getWorker().getWorker(m.$getStore().name());
+          weakStats = m.refreshWeakEstimates_remote@w(null, weakStats);
+        }
+        atomic {
+          rtn = WarrantyProposal.newProposal(candidate2, m, ThresholdStatement.create(0, 0.5, time), weakStats);
+        }
+      }
+    } else {
+      if (tm.inTxn()) {
+        rtn = WarrantyProposal.newProposal("tie", m, EqualityStatement.create(0), weakStats);
+      } else {
+        atomic {
+          rtn = WarrantyProposal.newProposal("tie", m, EqualityStatement.create(0), weakStats);
+        }
+      }
+    }
+    return rtn;
+  }
+}

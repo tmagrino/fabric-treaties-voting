@@ -1,0 +1,112 @@
+package voting.util;
+
+import fabric.metrics.SampledMetric;
+import fabric.metrics.Metric;
+import fabric.util.HashMap;
+import fabric.util.Iterator;
+import fabric.util.Map;
+import fabric.worker.Store;
+import fabric.common.Logging;
+import java.util.logging.Level;
+import fabric.worker.transaction.TransactionManager;
+
+public class District {
+
+  /**
+   * Maps candidates (Strings) to Votes.
+   */
+  private final Map votes;
+  /** Maps candidates (Strings) to SampledMetrics tracking the Votes */
+  private final Map samples;
+  /**
+   * Maps Strings "x vs y" to DerivedMetrics tracking the difference in Votes
+   * between candidates x and y (x - y)
+   */
+  private final Map margins;
+
+  public District voting$util$District$() {
+    fabric$lang$Object$();
+    this.votes = new HashMap().fabric$util$HashMap$();
+    this.votes.put("a", new Votes().voting$util$Votes$());
+    this.votes.put("b", new Votes().voting$util$Votes$());
+    this.samples = new HashMap().fabric$util$HashMap$();
+    this.samples.put("a", new SampledMetric().fabric$metrics$SampledMetric$(0, 0));
+    this.samples.put("b", new SampledMetric().fabric$metrics$SampledMetric$(1, 0));
+    this.margins = new HashMap().fabric$util$HashMap$();
+    return this;
+  }
+
+  public int vote_remote(fabric.lang.security.Principal callPrincipal, String candidate) {
+    //final Store s = $getStore();
+    //System.out.println("Attempting to vote... store " + s);
+    int result = vote(candidate);
+    return result;
+  }
+
+  public int vote(String candidate) {
+    return vote_static(this, candidate);
+  }
+
+  private static int vote_static(District tmp, String candidate) {
+    int result = 0;
+    TransactionManager tm = TransactionManager.getInstance();
+    tm.stats.reset();
+    Logging.log(Logging.METRICS_LOGGER, Level.INFO, "STARTED VOTE FOR {0}",
+        new java.lang.Object native[] { candidate });
+    long voteStartTime = System.currentTimeMillis();
+    atomic {
+      final Store s = tmp.$getStore();
+      Votes votes = (Votes) tmp.votes.get(candidate);
+      if (votes == null) {
+        votes = new Votes@s().voting$util$Votes$();
+        tmp.votes.put(candidate, votes);
+      }
+
+      SampledMetric sample = (SampledMetric) tmp.samples.get(candidate);
+      if (sample == null) {
+        sample = new SampledMetric@s().fabric$metrics$SampledMetric$(candidate.equals("a") ? 0 : 1, 0);
+        tmp.samples.put(candidate, sample);
+      }
+
+      votes.increment();
+      sample.takeSample(votes.get(), System.currentTimeMillis());
+      result = votes.get();
+    }
+    Logging.log(Logging.METRICS_LOGGER, Level.INFO,
+        "FINISHED VOTE FOR {0} IN {1}ms STATS: {2}",
+        new java.lang.Object native[] {
+          candidate,
+          new Long(System.currentTimeMillis() - voteStartTime),
+          tm.stats
+        });
+    return result;
+  }
+
+  public void addToTally(Tally tally) {
+    for (Iterator it = votes.entrySet().iterator(); it.hasNext(); ) {
+      Map.Entry entry = (Map.Entry) it.next();
+      tally.add((String) entry.getKey(), ((Votes) entry.getValue()).get());
+    }
+  }
+
+  public Metric margin(String candidate1, String candidate2) {
+    String key = candidate1 + " vs " + candidate2;
+    if (margins.containsKey(key)) {
+      return (Metric) margins.get(key);
+    }
+    final Store s = $getStore();
+    Metric sample1 = (Metric) samples.get(candidate1);
+    if (sample1 == null) {
+      sample1 = new SampledMetric@s().fabric$metrics$SampledMetric$(candidate1.equals("a") ? 0 : 1, 0);
+      samples.put(candidate1, sample1);
+    }
+    Metric sample2 = (Metric) samples.get(candidate2);
+    if (sample2 == null) {
+      sample2 = new SampledMetric@s().fabric$metrics$SampledMetric$(candidate2.equals("a") ? 0 : 1, 0);
+      samples.put(candidate2, sample2);
+    }
+    Metric result = sample1.plus(sample2.times(-1));
+    margins.put(key, result);
+    return result;
+  }
+}

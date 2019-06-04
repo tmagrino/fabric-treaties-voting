@@ -1,5 +1,13 @@
-# Compiled class file
+# Local configuration for build.
+config.properties
+config.sh
+
+# Local generated data
+var/
+
+# Compiled files
 *.class
+classes/
 
 # Log file
 *.log

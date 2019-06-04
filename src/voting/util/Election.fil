@@ -1,0 +1,97 @@
+package voting.util;
+
+import fabric.util.Map;
+import fabric.util.HashMap;
+import fabric.worker.transaction.TransactionManager;
+import fabric.common.Logging;
+import java.util.logging.Level;
+
+public class Election {
+  private final District[] districts;
+  // Maps strings of the form "x vs y" to a warranty for the current winner
+  // between the candidates named x and y
+  private final Map/*<String, WinnerWarrantyComp>*/ winnerWarranties;
+
+  public Election voting$util$Election$(District[] districts) {
+    this.districts = districts;
+    Store store = Worker.getWorker().getStore("district1");
+    this.winnerWarranties = new HashMap@store().fabric$util$HashMap$();
+    fabric$lang$Object$();
+    String key = "a vs b";
+    fabric.common.Logging.METRICS_LOGGER.finer("CREATING WINNER COMP: " + key);
+    atomic {
+      WinnerWarrantyComp w = new
+        WinnerWarrantyComp@store().voting$util$WinnerWarrantyComp$(districts,
+            "a", "b");
+      winnerWarranties.put(key, w);
+      //w.apply(System.currentTimeMillis());
+    }
+    fabric.common.Logging.METRICS_LOGGER.finer("CREATED WINNER COMP: " + key);
+    return this;
+  }
+
+  /**
+   * @param districtNum a 1-based index
+   */
+  public District getDistrict(int districtNum) {
+    if (districtNum < 1 || districtNum > districts.length) return null;
+    return districts[districtNum-1];
+  }
+
+  public Tally tally(Store store) {
+    atomic {
+      Tally tally = new Tally@store().voting$util$Tally$();
+      for (int i = 0; i < districts.length; i++) {
+        districts[i].addToTally(tally);
+      }
+
+      return tally;
+    }
+  }
+
+  public String winner(Store store, String candidate1, String candidate2) {
+    if (candidate1.compareTo(candidate2) > 0)
+      return winner(store, candidate1, candidate1);
+    //System.out.println("ATTEMPTING FRONT RUNNER QUERY");
+    String key = candidate1 + " vs " + candidate2;
+    WinnerWarrantyComp w = null;
+
+    // Phase 1: get a warranty computation
+    atomic {
+      w = (WinnerWarrantyComp) winnerWarranties.get(key);
+    }
+    if (w == null) {
+      atomic {
+        fabric.common.Logging.METRICS_LOGGER.finer("CREATING WINNER COMP: " + key);
+        w = new WinnerWarrantyComp@store().voting$util$WinnerWarrantyComp$(
+                districts, candidate1, candidate2);
+        winnerWarranties.put(key, w);
+      }
+      fabric.common.Logging.METRICS_LOGGER.finer("CREATED WINNER COMP: " + key);
+    }
+
+    // Phase 2: run it.
+    String winner = "no idea";
+    fabric.common.Logging.METRICS_LOGGER.finer("RUNNING WINNER COMP: " + key);
+    // *don't* run this in a transaction, it scales better to run apply in a
+    // series of smaller transactions before returning.
+    Logging.log(Logging.METRICS_LOGGER, Level.INFO,
+        "STARTED QUERY FOR WINNER AT {0}ms IN {1}",
+        new java.lang.Object native[] {
+          new Long(System.currentTimeMillis()),
+          Thread.currentThread()
+        });
+    TransactionManager tm = TransactionManager.getInstance();
+    tm.stats.reset();
+    long startTime = System.currentTimeMillis();
+    winner = (String) (w.apply(System.currentTimeMillis()).value);
+    Logging.log(Logging.METRICS_LOGGER, Level.INFO,
+        "FINISHED QUERY FOR WINNER({0}) IN {1}ms STATS: {2}",
+        new java.lang.Object native[] {
+          winner,
+          new Long(System.currentTimeMillis() - startTime),
+          tm.stats
+        });
+    return winner;
+  }
+}
